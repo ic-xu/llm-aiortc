@@ -1,6 +1,6 @@
-fastapi
 aiortc
 numpy
 av
 pydub
 aiohttp
+aiohttp-cors

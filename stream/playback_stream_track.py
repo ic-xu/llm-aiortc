@@ -3,6 +3,7 @@ from typing import Optional
 
 from aiortc import MediaStreamTrack, RTCDataChannel
 from aiortc.contrib.media import MediaPlayer
+import av
 
 
 class PlaybackStreamTrack(MediaStreamTrack):
@@ -40,21 +41,12 @@ class PlaybackStreamTrack(MediaStreamTrack):
 
     def select_track(self):
         self.is_silence = False
-        # print(f"[select_track] response_ready : {self.response_ready}")
-        # print(f"[select_track] step : {self.step}")
-        # print(f"[select_track] last_step : {self.last_step}")
-        # print(f"[select_track] audio_files : {self.audio_files}")
-        # print(f"[select_track] len(audio_files) : {len(self.audio_files)}")
-        # if self.response_ready and len(self.audio_files) >= self.step and self.step <= self.last_step:
         if self.response_ready and (len(self.audio_files) >= self.step) and ((self.last_step == 0) or (self.step <= self.last_step)):
             audio_file = self.audio_files[self.step - 1]
             self.track = MediaPlayer(audio_file, format="wav", loop=False).audio
-            # print(f"[select_track] Came in track for {audio_file}")
         else:
-            #self.track = MediaPlayer("silence.wav", format="wav", loop=False).audio
-            self.track = MediaPlayer("silent-250.wav", format="wav", loop=False).audio
+            self.track = MediaPlayer("../static/silent-250.wav", format="wav", loop=False).audio
             self.is_silence = True
-            # print("[select_track] Came in silence")
         if self.channel is not None and self.channel.readyState == "open":
             if self.response_ready:
                 self.channel.send("playing: response")

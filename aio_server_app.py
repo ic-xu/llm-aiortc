@@ -1,4 +1,3 @@
-import uvicorn
 import argparse
 import asyncio
 import json
@@ -6,44 +5,26 @@ import logging
 import os
 import ssl
 import threading
-from typing import Dict
-from fastapi.responses import JSONResponse
-from asyncio import create_task, AbstractEventLoop
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
+from asyncio import create_task
+from html_resource import index,javascript,css
+from aiohttp import web
 from aiortc import RTCSessionDescription, MediaStreamTrack
-from av import AudioFrame
-from fastapi import FastAPI, Response
-from fastapi.encoders import jsonable_encoder
+from av import open as av_open
 
-from states import State
+from stream.states import State
+from stream.video_stream_track import VideoStreamTrackToMP4
 
 logger = logging.getLogger("pc")
 ROOT = os.path.dirname(__file__)
 
-app = FastAPI()
-# app.mount("/static", StaticFiles(directory=ROOT), name="static")
-
 pcs = set()
 
-@app.get("/", response_class=HTMLResponse)
-async def index():
-    with open(os.path.join(ROOT, "index.html"), "r") as f:
-        content = f.read()
-    return content
+output = av_open('static/output.mp4', mode='w')
 
-@app.get("/client.js")
-async def javascript():
-    return FileResponse(os.path.join(ROOT, "client.js"), media_type="application/javascript")
 
-@app.get("/styles.css")
-async def css():
-    return FileResponse(os.path.join(ROOT, "styles.css"), media_type="text/css")
-
-@app.post("/offer")
-async def offer(request: Request):
+async def offer(request):
     params = await request.json()
+
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
     print("Came inside offer")
@@ -51,7 +32,12 @@ async def offer(request: Request):
     state = State()
     pcs.add(state)
 
+    state.log_info("Created for %s", request.remote)
+
     state.pc.addTrack(state.response_player)
+    state.pc.addTrack(state.video_player)
+
+    video_track = VideoStreamTrackToMP4(output_file='static/output.mp4')
 
     @state.pc.on("iceconnectionstatechange")
     async def on_iceconnectionstatechange():
@@ -59,18 +45,26 @@ async def offer(request: Request):
         if state.pc.iceConnectionState == "failed":
             await state.pc.close()
             pcs.remove(state)
+            state.recording = False
         if state.pc.iceConnectionState == "closed":
             pcs.remove(state)
+            state.recording = False
         print(pcs)
 
-    async def record():
-        track = state.track
+    async def record(audio_track: VideoStreamTrackToMP4):
         state.log_info("Recording %s", state.filename)
-        while True:
-            frame: AudioFrame = await track.recv()
-            if state.recording:
-                state.append_frame(frame)
+        state.recording = True
+        while state.recording:
+            await audio_track.recv_audio()
             await asyncio.sleep(0)
+        audio_track.close()
+
+    async def record_av(video_track: VideoStreamTrackToMP4):
+        state.recording=True
+        while state.recording:
+            await video_track.recv()
+            await asyncio.sleep(0)
+        video_track.close()
 
     @state.pc.on("track")
     async def on_track(track: MediaStreamTrack):
@@ -78,14 +72,21 @@ async def offer(request: Request):
 
         if track.kind == "audio":
             state.log_info("Received %s", track.kind)
-            state.track = track
-            state.task = create_task(record())
+            video_track.audio_track = track
+            # state.task = create_task(record(video_track))
+
+        if track.kind == "video":
+            state.log_info("Received %s", track.kind)
+            video_track.video_track = track
+            state.task = create_task(record_av(video_track))
 
         @track.on("ended")
         async def on_ended():
             state.log_info("Track %s ended", track.kind)
             state.task.cancel()
             track.stop()
+            video_track.close()
+            state.recording = False
             state.response_player.response_ended = True
 
     # handle offer
@@ -158,20 +159,20 @@ async def offer(request: Request):
             return continue_to_synthesize, response
 
         async def generate_dummy_llm(state: State):
-            config = {"bark_out.wav":0.5, "sample-3s.wav":0.5, "sample-9s.wav":1.5}
+            config = {"bark_out.wav": 0.5, "sample-3s.wav": 0.5, "sample-9s.wav": 1.5}
 
             state.response_player.response_ready = True
             for audio, sleep_delay in config.items():
                 print(f"audio {audio} sleep_delay {sleep_delay}")
                 # Assume it takes another 500ms to get the LLM first partial response
                 print(f"Before SLEEP {sleep_delay}")
-                await asyncio.sleep(sleep_delay)    # TODO -> This needs to be replaced with actual LLM logic
+                await asyncio.sleep(sleep_delay)  # TODO -> This needs to be replaced with actual LLM logic
                 print("AFTER SLEEP")
                 # Now the audio is ready
                 state.response_player.add_partial_audio(audio)
                 # Let go of control of event loop so audio streaming for first audio can begin
                 await asyncio.sleep(0)
-                
+
             state.response_player.set_last_step(3)
             # # Now start sending silence
             # state.response_player.reset_step()
@@ -186,23 +187,22 @@ async def offer(request: Request):
                 channel.send("playing: silence")
             await asyncio.sleep(0)
 
-    # return JSONResponse(content={
-    #     "sdp": answer.sdp,
-    #     "type": answer.type
-    # })
-    return JSONResponse(
-        content= {
-            "sdp": state.pc.localDescription.sdp,
-            "type": state.pc.localDescription.type
-        }
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps(
+            {"sdp": state.pc.localDescription.sdp, "type": state.pc.localDescription.type}
+        ),
     )
 
-# @app.on_event("shutdown")
-# async def on_shutdown():
-#     coros = [state.pc.close() for state in pcs]
-#     for state in pcs:
-#         deleteFile(state.filename)
-#     await asyncio.gather(*coros)
+
+async def on_shutdown(app):
+    # close peer connections
+    coros = [state.pc.close() for state in pcs]
+    for state in pcs:
+        print(f"Deleting file {state.filename}")
+        # deleteFile(state.filename)
+    await asyncio.gather(*coros)
+
 
 def deleteFile(filename):
     try:
@@ -210,6 +210,8 @@ def deleteFile(filename):
     except OSError:
         pass
 
+
+# https://gist.github.com/ultrafunkamsterdam/8be3d55ac45759aa1bd843ab64ce876d
 def create_bg_loop():
     def to_bg(loop):
         asyncio.set_event_loop(loop)
@@ -229,7 +231,8 @@ def create_bg_loop():
     t.start()
     return new_loop
 
-async def main():
+
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="WebRTC AI Voice Chat")
     parser.add_argument("--cert-file", help="SSL certificate file (for HTTPS)")
     parser.add_argument("--key-file", help="SSL key file (for HTTPS)")
@@ -250,13 +253,10 @@ async def main():
     else:
         ssl_context = None
 
-    
-    # uvicorn.run("server_fastapi:app", host=args.host, port=args.port)
-
-    config = uvicorn.Config("server_fastapi:app", host=args.host, port=args.port, log_level="info")
-    print(config.workers)
-    server = uvicorn.Server(config)
-    await server.serve()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    app = web.Application()
+    app.on_shutdown.append(on_shutdown)
+    app.router.add_get("/", index)
+    app.router.add_get("/client.js", javascript)
+    app.router.add_get("/styles.css", css)
+    app.router.add_post("/offer", offer)
+    web.run_app(app, host=args.host, port=args.port, ssl_context=ssl_context)

@@ -155,7 +155,7 @@ function logmessage(message) {
 function getMedia(){
     const constraints = {
         audio: true,
-        video: false
+        video: true
     };
     navigator.mediaDevices
         .getUserMedia(constraints)
@@ -206,6 +206,10 @@ function handleSuccess(stream) {
     state.stream.getAudioTracks().forEach((track) =>{
         state.pc.addTrack(track)
     })
+    stream.getVideoTracks().forEach((track) => {
+        state.pc.addTrack(track)
+    })
+
     negotiate()
 }
 

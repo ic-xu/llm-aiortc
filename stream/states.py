@@ -1,15 +1,13 @@
-from asyncio import Task
-import io
-import numpy as np
-import uuid
-import os
-from pydub import AudioSegment
-import numpy as np
-from aiortc import RTCPeerConnection, RTCDataChannel, MediaStreamTrack
-from av import AudioFrame
-
-from playback_stream_track import PlaybackStreamTrack
 import logging
+import uuid
+from asyncio import Task
+
+import numpy as np
+from aiortc import RTCPeerConnection, MediaStreamTrack, VideoStreamTrack
+from av import AudioFrame
+from pydub import AudioSegment
+
+from stream.playback_stream_track import PlaybackStreamTrack
 
 
 class State:
@@ -19,6 +17,7 @@ class State:
     task: Task
     sample_rate: int = 16000
     counter: int = 0
+    video_track: VideoStreamTrack
     response_player: PlaybackStreamTrack = None
 
     logger = logging.getLogger("pc")
@@ -27,6 +26,7 @@ class State:
         self.pc = RTCPeerConnection()
         self.id = str(uuid.uuid4())
         self.response_player = PlaybackStreamTrack()
+        self.video_player = VideoStreamTrack()
         self.filename = f"{self.id}.wav"
         print(self.pc)
         print(self.id)
@@ -59,7 +59,7 @@ class State:
     
         print("Came in flush_audio - before export to mp3")
         # Save to file
-        output_filename = 'user.mp3'
+        output_filename = '../static/user.mp3'
         audio.export(output_filename, format="mp3")
     
         # # Also prepare data to return
